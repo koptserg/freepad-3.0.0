@@ -6,6 +6,9 @@
 #include "zcl.h"
 #include "zcl_general.h"
 #include "bdb_interface.h"
+
+#include "ZDApp.h"
+
 // (( 3 * 1.15 ) / (( 2^14 / 2 ) - 1 )) * 1000 (not correct)
 // #define MULTI (float) 0.4211939934
 // this coefficient calculated using
@@ -16,7 +19,8 @@
 #define VOLTAGE_MAX 3.3
 
 #ifndef ZCL_BATTERY_REPORT_INTERVAL
-    #define ZCL_BATTERY_REPORT_INTERVAL ((uint32) 1800000) //30 minutes
+    #define ZCL_BATTERY_REPORT_INTERVAL ((uint32) 3600000) //60 minutes
+//#define ZCL_BATTERY_REPORT_INTERVAL ((uint32) 10000) // 10 sec
 #endif
 
 #ifndef ZCL_BATTERY_REPORT_DELAY
@@ -29,9 +33,14 @@
 
 #define POWER_CFG ZCL_CLUSTER_ID_GEN_POWER_CFG
 
-#define ZCL_BATTERY_REPORT_EVT 0x0001
+#define ZCL_BATTERY_REPORT_EVT     0x0001
+#define ZCL_BATTERY_REPORT_KEY_EVT 0x0002
 
-static void zclBatterh_Report(void);
+#if BDB_REPORTING
+static void zclBattery_Report(void);
+#endif
+static void zclBattery_Report_Key(void);
+static void zclBattery_Measurement(void);
 
 uint8 zclBattery_Voltage = 0xff;
 uint8 zclBattery_PercentageRemainig = 0xff;
@@ -71,16 +80,26 @@ uint8 getBatteryRemainingPercentageZCLCR2032(uint16 volt16) {
     return (uint8)(battery_level * 2);
 }
 
-static void zclBatterh_Report(void) {
+static void zclBattery_Measurement(void) {
     uint16 millivolts = getBatteryVoltage();
     zclBattery_Voltage = getBatteryVoltageZCL(millivolts);
     zclBattery_PercentageRemainig = ZCL_BATTERY_REPORT_REPORT_CONVERTER(millivolts);
-
+    
     LREP("Battery voltageZCL=%d prc=%d voltage=%d\r\n", zclBattery_Voltage, zclBattery_PercentageRemainig, millivolts);
+}
 
 #if BDB_REPORTING
+static void zclBattery_Report(void) {
+    zclBattery_Measurement();
+
     bdb_RepChangedAttrValue(1, POWER_CFG, ATTRID_POWER_CFG_BATTERY_PERCENTAGE_REMAINING);
-#else
+
+}
+#endif
+
+static void zclBattery_Report_Key(void) {
+    zclBattery_Measurement();
+
     const uint8 NUM_ATTRIBUTES = 2;
     zclReportCmd_t *pReportCmd;
     pReportCmd = osal_mem_alloc(sizeof(zclReportCmd_t) + (NUM_ATTRIBUTES * sizeof(zclReport_t)));
@@ -98,7 +117,6 @@ static void zclBatterh_Report(void) {
         zcl_SendReportCmd(1, &inderect_DstAddr, POWER_CFG, pReportCmd, ZCL_FRAME_CLIENT_SERVER_DIR, TRUE, bdb_getZCLFrameCounter());
     }
     osal_mem_free(pReportCmd);
-#endif
 }
 
 uint8 zclBattery_TaskId = 0;
@@ -112,14 +130,25 @@ void zclBattery_Init(uint8 task_id) {
 
 uint16 zclBattery_event_loop(uint8 task_id, uint16 events) {
     LREP("zclBattery_event_loop 0x%X\r\n", events);
+#if BDB_REPORTING    
     if (events & ZCL_BATTERY_REPORT_EVT) {
         LREPMaster("ZCL_BATTERY_REPORT_EVT\r\n");
-        zclBatterh_Report();
+        if (devState == DEV_END_DEVICE) {
+          zclBattery_Report();
+        }
         return (events ^ ZCL_BATTERY_REPORT_EVT);
+    }
+#endif    
+    if (events & ZCL_BATTERY_REPORT_KEY_EVT) {
+        LREPMaster("ZCL_BATTERY_REPORT_KEY_EVT\r\n");
+        if (devState == DEV_END_DEVICE) {
+          zclBattery_Report_Key();
+        }
+        return (events ^ ZCL_BATTERY_REPORT_KEY_EVT);
     }
     return 0;
 }
 
 void zclBattery_HandleKeys(uint8 portAndAction, uint8 keyCode) {
-    osal_start_timerEx(zclBattery_TaskId, ZCL_BATTERY_REPORT_EVT, ZCL_BATTERY_REPORT_DELAY);
+    osal_start_timerEx(zclBattery_TaskId, ZCL_BATTERY_REPORT_KEY_EVT, ZCL_BATTERY_REPORT_DELAY);
 }
